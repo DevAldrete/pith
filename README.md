@@ -1,23 +1,92 @@
 # Pith
 
 ## What is this?
-This is a project supposed to be used fairly easy for ingesting data into a vector store
-making it so easy that you can even combine this tool in pipelines of data for storing
-your whole codebase using tools like `stump` or your entire "second brain"
 
-## How does this work?
-Before you go away, this is not a SaaS, this is fully free and open source.
-And yes, it means it is local and privacy focused since you literally have
-your database locally in a .db file. Simple as that!
+Pith is a small, local-first CLI for ingesting text chunks into a SQLite database with [sqlite-vec](https://github.com/asg017/sqlite-vec) and querying them semantically. It is meant for pipelines (for example, AST chunkers that emit NDJSON) and for keeping a codebase or notes searchable on disk without a hosted vector SaaS.
 
-Oh, but there's a catch... Well, if you are willing to do so, that is, you
-have to use an embeding provider, one thing is the vector store, and other
-is the embedding, so i guess that you would be interested in using openAI,
-or a local way if your computer can afford it using tools like ollama for
-nomic embedding.
+Embeddings are **not** stored magically: you provide an embedding backend. The default integration is **Ollama** (`/api/embed`), for example `nomic-embed-text`.
 
-## So... Why use this tool?
-This tool was created for being used with AI mainly, but it is not the only
-purpose, i wanted to give this tool the total freedom of being used anywhere
-so, you can use it not only to use it with AI but also for yourself in any
-usage you want.
+## Requirements
+
+- [Go](https://go.dev/) 1.26+ (see `go.mod`)
+- [Ollama](https://ollama.com/) with an embedding model pulled (e.g. `ollama pull nomic-embed-text`)
+- This repo pins `github.com/ncruces/go-sqlite3` to **v0.20.3** so the WASM build bundled by `sqlite-vec-go-bindings` works with the embedded runtime (newer ncruces releases can hit WASM atomic instruction issues until bindings catch up).
+
+## Install
+
+```bash
+go install github.com/devaldrete/pith/cmd/pith@latest
+```
+
+Or from a clone:
+
+```bash
+go build -o pith ./cmd/pith
+```
+
+## NDJSON contract (`pith ingest`)
+
+Ingest reads **newline-delimited JSON** from stdin. Each line must be one JSON object with at least:
+
+| Field         | Required | Meaning                          |
+|---------------|----------|----------------------------------|
+| `text`        | yes      | Chunk body to embed and store    |
+| `path`        | yes      | Source path or logical id        |
+| `start_line`  | no       | Start line (default `0`)         |
+| `end_line`    | no       | End line (default `0`)           |
+| `language`    | no       | Hint for tooling                 |
+| `id`          | no       | Optional external id (not used as PK) |
+
+Empty lines are skipped. Upserts use the unique key `(path, start_line, end_line)`.
+
+## Environment
+
+| Variable       | Effect                                      |
+|----------------|---------------------------------------------|
+| `PITH_DB`      | Default path for `--db` if you set it globally |
+| `OLLAMA_HOST`  | Ollama base URL (default `http://127.0.0.1:11434`) |
+| `DEBUG`        | Same as global `--debug` when supported by Kong mapping |
+
+## Usage
+
+Initialize a database (optional; `ingest` creates tables as needed):
+
+```bash
+pith init --db ./my.db
+```
+
+Pipeline ingest (example):
+
+```bash
+your-chunker --to-json ./src/ | pith ingest --db ./my.db --embed-model nomic-embed-text
+```
+
+Smoke test without a chunker:
+
+```bash
+echo '{"text":"hello world","path":"demo.txt","start_line":1,"end_line":1}' | pith ingest --db ./demo.db
+```
+
+Query (natural language; must use the **same** `--embed-model` as ingest):
+
+```bash
+pith query --db ./my.db "where is auth handled?"
+```
+
+Machine-readable hits:
+
+```bash
+pith query --db ./my.db --json --k 5 "error handling"
+```
+
+Default text output columns: `path`, `start:end`, `distance`, and a short snippet (tabs separated).
+
+## How it works
+
+- **Storage**: `chunks` table for metadata and text; `vec_chunks` sqlite-vec `vec0` virtual table for float embeddings. Model name and vector dimension are stored in `meta` after the first successful ingest.
+- **Embeddings**: Batch calls to Ollama `POST /api/embed` with an `input` array of strings.
+- **Search**: KNN via sqlite-vec `MATCH` + `k`, joined back to `chunks` for snippets.
+
+## Why use this tool?
+
+Local `.db` file, no account, suitable for AI-assisted workflows or plain human search. Combine with any tool that can emit the NDJSON shape above.

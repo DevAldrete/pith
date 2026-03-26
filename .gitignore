@@ -1,0 +1,11 @@
+# Binaries
+pith
+*.db
+
+# Example files
+*.ndjson
+*.json
+
+
+# Ignore environment variable files
+.env
